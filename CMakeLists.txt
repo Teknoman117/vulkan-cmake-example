@@ -13,5 +13,5 @@ add_subdirectory(external/glm)
 find_package(Vulkan REQUIRED)
 
 add_executable(TestApp "${PROJECT_SOURCE_DIR}/src/main.cpp")
-target_compile_features(TestApp PUBLIC cxx_std_14)
+target_compile_features(TestApp PUBLIC cxx_std_17)
 target_link_libraries(TestApp Vulkan::Vulkan glfw glm)
