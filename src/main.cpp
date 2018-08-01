@@ -1,4 +1,5 @@
-//#define GLFW_INCLUDE_VULKAN
+#define GLFW_INCLUDE_VULKAN
+#define VULKAN_HPP_TYPESAFE_CONVERSION
 #include <GLFW/glfw3.h>
 #include <vulkan/vulkan.hpp>
 
@@ -7,6 +8,7 @@
 #include <functional>
 #include <cstdlib>
 #include <memory>
+#include <set>
 #include <vector>
 
 extern "C"
@@ -62,6 +64,15 @@ class HelloTriangleApplication
     constexpr static bool kValidationEnabled = true;
 #endif
 
+    struct QueueFamilyIndices {
+        int graphicsFamily = -1;
+        int presentFamily = -1;
+
+        constexpr bool isComplete() {
+            return graphicsFamily >= 0 && presentFamily >= 0;
+        }
+    };
+
     // collect list of desired layers
     const std::vector<const char*> validationLayers = {
         "VK_LAYER_LUNARG_standard_validation"
@@ -72,6 +83,9 @@ class HelloTriangleApplication
     vk::UniqueDebugReportCallbackEXT mDebugReportCallback;
     vk::UniqueDevice mDevice;
     vk::Queue mGraphicsQueue;
+    vk::Queue mPresentQueue;
+
+    vk::UniqueSurfaceKHR mSurface;
 
 public:
     void run()
@@ -95,6 +109,7 @@ private:
     void initVulkan()
     {
         createInstance();
+        createSurface();
         createDevice();
     }
 
@@ -180,54 +195,79 @@ private:
             throw std::runtime_error("failed to create debug report callback!");
     }
 
+    void createSurface()
+    {
+        vk::SurfaceKHR surface;
+        vk::Result result = static_cast<vk::Result>(glfwCreateWindowSurface(mInstance.get(), mWindow, nullptr,
+                reinterpret_cast<VkSurfaceKHR*>(&surface)));
+
+        vk::ObjectDestroy<vk::Instance> deleter(mInstance.get(), nullptr);
+        mSurface = vk::createResultValue(result, surface, "createSurface", deleter);
+    }
+
+    QueueFamilyIndices getQueueFamilyIndices(vk::PhysicalDevice& d)
+    {
+        QueueFamilyIndices indices;
+
+        auto queueFamilies = d.getQueueFamilyProperties();
+        for (auto it = queueFamilies.begin(); it != queueFamilies.end(); it++)
+        {
+            uint32_t id = std::distance(queueFamilies.begin(), it);
+            if (it->queueFlags & vk::QueueFlagBits::eGraphics)
+                indices.graphicsFamily = id;
+
+            vk::Bool32 supported;
+            d.getSurfaceSupportKHR(id, mSurface.get(), &supported);
+            if (supported)
+                indices.presentFamily = id;
+        }
+        return indices;
+    }
+
     void createDevice()
     {
         // Find a suitable GPU
         auto devices = mInstance->enumeratePhysicalDevices();
-        auto device = std::find_if(devices.begin(), devices.end(), [] (auto& d)
+        auto device = std::find_if(devices.begin(), devices.end(), [this] (vk::PhysicalDevice& d)
         {
-            auto queueFamilies = d.getQueueFamilyProperties();
+            QueueFamilyIndices indices = getQueueFamilyIndices(d);
             auto properties = d.getProperties();
             auto features = d.getFeatures();
 
-            auto graphicsQueue = std::find_if(queueFamilies.begin(), queueFamilies.end(), [] (auto& q)
-            {
-                return q.queueFlags & vk::QueueFlagBits::eGraphics;
-            });
-
             return properties.deviceType == vk::PhysicalDeviceType::eDiscreteGpu
                     && features.geometryShader
-                    && graphicsQueue != queueFamilies.end();
+                    && indices.isComplete();
         });
 
         if (device == devices.end())
             throw std::runtime_error("failed to find a suitable GPU!");
 
-        std::cerr << "picked GPU: " << device->getProperties().deviceName << std::endl;
+        std::cerr << "[INFO] Using Device: " << device->getProperties().deviceName << std::endl;
 
-        // Assemble list of queues to create
-        auto queueFamilies = device->getQueueFamilyProperties();
-        auto graphicsQueue = std::find_if(queueFamilies.begin(), queueFamilies.end(), [] (auto& q)
-        {
-            return q.queueFlags & vk::QueueFlagBits::eGraphics;
-        });
-
-        const float queuePriorities[] = { 1.0f };
-        uint32_t graphicsQueueId = std::distance(queueFamilies.begin(), graphicsQueue);
-        
-        const std::vector<vk::DeviceQueueCreateInfo> queues =
-        {
-            vk::DeviceQueueCreateInfo({}, graphicsQueueId, 1, queuePriorities)
+        // Assemble list of UNIQUE queue families to be created
+        QueueFamilyIndices indices = getQueueFamilyIndices(*device);
+        float defaultPriority = 1.0f;
+        const std::set<int> queueFamilies = {
+            indices.graphicsFamily,
+            indices.presentFamily
         };
+
+        std::vector<vk::DeviceQueueCreateInfo> queues;
+        for (int family : queueFamilies)
+            queues.push_back(vk::DeviceQueueCreateInfo({}, indices.graphicsFamily, 1, &defaultPriority));
 
         // note: device layers have been deprecated
         mDevice = device->createDeviceUnique({{}, (uint32_t) queues.size(), queues.data()});
         if (!mDevice)
             throw std::runtime_error("failed to create logical device!");
 
-        mGraphicsQueue = mDevice->getQueue(graphicsQueueId, 0);
+        mGraphicsQueue = mDevice->getQueue(indices.graphicsFamily, 0);
         if (!mGraphicsQueue)
             throw std::runtime_error("failed to get graphics queue!");
+
+        mPresentQueue = mDevice->getQueue(indices.presentFamily, 0);
+        if (!mPresentQueue)
+            throw std::runtime_error("failed to get present queue!");
     }
 
     void mainLoop()
