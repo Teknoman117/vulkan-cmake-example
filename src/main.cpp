@@ -87,6 +87,7 @@ struct SwapchainSupportDetails
 
 class HelloTriangleApplication
 {
+    constexpr static uint32_t kMaxInFlight = 2;
     constexpr static uint32_t kWidth = 800;
     constexpr static uint32_t kHeight = 600;
 
@@ -118,6 +119,9 @@ class HelloTriangleApplication
     vk::UniqueShaderModule mFragmentShaderModule;
     vk::UniquePipelineLayout mPipelineLayout;
     vk::UniquePipeline mPipeline;
+    std::vector<vk::UniqueSemaphore> mImageAvailableSemaphores;
+    std::vector<vk::UniqueSemaphore> mRenderFinishedSemaphores;
+    std::vector<vk::UniqueFence> mInFlightFences;
 
     vk::UniqueSurfaceKHR mSurface;
     vk::UniqueSwapchainKHR mSwapchain;
@@ -126,6 +130,10 @@ class HelloTriangleApplication
     std::vector<vk::Image> mSwapchainImages;
     std::vector<vk::UniqueImageView> mSwapchainImageViews;
     std::vector<vk::UniqueFramebuffer> mSwapchainFramebuffers;
+    vk::UniqueCommandPool mCommandPool;
+    std::vector<vk::CommandBuffer> mCommandBuffers;
+
+    size_t currentFrame = 0;
 
 public:
     void run()
@@ -155,6 +163,26 @@ private:
         createRenderPass();
         createGraphicsPipeline();
         createFramebuffers();
+        createCommandPool();
+        createCommandBuffers();
+        createSemaphores();
+    }
+
+    void mainLoop()
+    {
+        while (!glfwWindowShouldClose(mWindow))
+        {
+            glfwPollEvents();
+            drawFrame();
+        }
+
+        mDevice->waitIdle();
+    }
+
+    void cleanup()
+    {
+        glfwDestroyWindow(mWindow);
+        glfwTerminate();
     }
 
     /**
@@ -422,7 +450,11 @@ private:
         vk::AttachmentReference colorAttachmentRef = {0U, vk::ImageLayout::eColorAttachmentOptimal};
         vk::SubpassDescription subpass = {{}, vk::PipelineBindPoint::eGraphics, 0U, nullptr, 1U, &colorAttachmentRef};
 
-        mRenderPass = mDevice->createRenderPassUnique({{}, 1U, &colorAttachment, 1U, &subpass});
+        vk::SubpassDependency dependency = { VK_SUBPASS_EXTERNAL, 0U, vk::PipelineStageFlagBits::eColorAttachmentOutput,
+                vk::PipelineStageFlagBits::eColorAttachmentOutput, {},
+                vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite};
+
+        mRenderPass = mDevice->createRenderPassUnique({{}, 1U, &colorAttachment, 1U, &subpass, 1U, &dependency});
         if (!mRenderPass)
             throw std::runtime_error("failed to create render pass!");
     }
@@ -447,12 +479,12 @@ private:
         };
 
         vk::PipelineVertexInputStateCreateInfo vertexInputInfo = {{}, 0U, nullptr, 0U, nullptr};
-        vk::PipelineInputAssemblyStateCreateInfo inputAssembly = {{}, vk::PrimitiveTopology::eTriangleList};
+        vk::PipelineInputAssemblyStateCreateInfo inputAssembly = {{}, vk::PrimitiveTopology::eTriangleList, false};
         vk::Viewport viewport = {0.0f, 0.0f, (float) mSwapchainExtent.width, (float) mSwapchainExtent.height, 0.0f, 1.0f};
         vk::Rect2D scissor = {{0, 0}, mSwapchainExtent};
         vk::PipelineViewportStateCreateInfo viewportState = {{}, 1U, &viewport, 1U, &scissor};
         vk::PipelineRasterizationStateCreateInfo rasterizer = {{}, false, false, vk::PolygonMode::eFill,
-                vk::CullModeFlagBits::eBack, vk::FrontFace::eCounterClockwise, false, 0.0f, 0.0f, 0.0f, 1.0f};
+                vk::CullModeFlagBits::eBack, vk::FrontFace::eClockwise, false, 0.0f, 0.0f, 0.0f, 1.0f};
         vk::PipelineMultisampleStateCreateInfo multisampling = {{}, vk::SampleCountFlagBits::e1, false, 1.0f, nullptr,
                 false, false};
         vk::PipelineColorBlendAttachmentState colorBlendAttachment = {
@@ -469,7 +501,7 @@ private:
                         | vk::ColorComponentFlagBits::eA
         };
 
-        vk::PipelineColorBlendStateCreateInfo colorBlending = {{}, false, vk::LogicOp::eClear, 1U, &colorBlendAttachment,
+        vk::PipelineColorBlendStateCreateInfo colorBlending = {{}, false, vk::LogicOp::eCopy, 1U, &colorBlendAttachment,
                 {0.0f, 0.0f, 0.0f, 0.0f}};
         vk::DynamicState dynamicStates[] = { vk::DynamicState::eViewport, vk::DynamicState::eLineWidth };
         vk::PipelineDynamicStateCreateInfo dynamicState = {{}, sizeof dynamicStates / sizeof(dynamicStates[0]),
@@ -480,6 +512,8 @@ private:
         mPipeline = mDevice->createGraphicsPipelineUnique(nullptr, {{}, 2U, shaderStages, &vertexInputInfo,
                 &inputAssembly, nullptr, &viewportState, &rasterizer, &multisampling, nullptr, &colorBlending, nullptr,
                 mPipelineLayout.get(), mRenderPass.get(), 0U, nullptr, -1});
+        if (!mPipeline)
+            throw std::runtime_error("failed to create pipeline!");
     }
 
     void createFramebuffers()
@@ -495,18 +529,68 @@ private:
         });
     }
 
-    void mainLoop()
+    void createCommandPool()
     {
-        while (!glfwWindowShouldClose(mWindow))
+        auto indices = getQueueFamilyIndices(mPhysicalDevice);
+        mCommandPool = mDevice->createCommandPoolUnique({{}, indices.graphicsFamily});
+    }
+
+    void createCommandBuffers()
+    {
+        mCommandBuffers = mDevice->allocateCommandBuffers({mCommandPool.get(), vk::CommandBufferLevel::ePrimary,
+                (uint32_t) mSwapchainFramebuffers.size()});
+
+        auto framebufferIt = mSwapchainFramebuffers.begin();
+        for (auto& commandBuffer : mCommandBuffers)
         {
-            glfwPollEvents();
+            commandBuffer.begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse, nullptr});
+
+            vk::ClearValue clearColor = (vk::ClearColorValue) {std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}};
+            commandBuffer.beginRenderPass({mRenderPass.get(), (framebufferIt++)->get(), {{0, 0}, mSwapchainExtent}, 1U,
+                    &clearColor}, vk::SubpassContents::eInline);
+
+            commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, mPipeline.get());
+            commandBuffer.draw(3U, 1U, 0U, 0U);
+            commandBuffer.endRenderPass();
+            commandBuffer.end();
         }
     }
 
-    void cleanup()
+    void createSemaphores()
     {
-        glfwDestroyWindow(mWindow);
-        glfwTerminate();
+        for (size_t i = 0; i < kMaxInFlight; i++)
+        {
+            if (!mImageAvailableSemaphores.emplace_back(mDevice->createSemaphoreUnique({}))
+                    || !mRenderFinishedSemaphores.emplace_back(mDevice->createSemaphoreUnique({}))
+                    || !mInFlightFences.emplace_back(mDevice->createFenceUnique({vk::FenceCreateFlagBits::eSignaled})))
+                throw std::runtime_error("failed to create synchronization object for a frame!");
+        }
+    }
+
+    void drawFrame()
+    {
+        mDevice->waitForFences(1, &mInFlightFences[currentFrame].get(), true, std::numeric_limits<uint64_t>::max());
+        mDevice->resetFences(1, &mInFlightFences[currentFrame].get());
+
+        auto res = mDevice->acquireNextImageKHR(mSwapchain.get(), std::numeric_limits<uint64_t>::max(),
+                mImageAvailableSemaphores[currentFrame].get(), nullptr);
+        if (res.result != vk::Result::eSuccess)
+            throw std::runtime_error("failed to acquire image from swapchain!");
+
+        uint32_t imageIndex = res.value;
+
+        vk::Semaphore waitSemaphores[] = {mImageAvailableSemaphores[currentFrame].get()};
+        vk::Semaphore signalSemaphores[] = {mRenderFinishedSemaphores[currentFrame].get()};
+        vk::PipelineStageFlags waitStages[] = {vk::PipelineStageFlagBits::eColorAttachmentOutput};
+        vk::SubmitInfo submitInfo = {1U, waitSemaphores, waitStages, 1U, &mCommandBuffers[imageIndex], 1U,
+                signalSemaphores};
+        if (mGraphicsQueue.submit(1U, &submitInfo, mInFlightFences[currentFrame].get()) != vk::Result::eSuccess)
+            throw std::runtime_error("failed to submit draw command buffer!");
+
+        vk::SwapchainKHR swapchains[] = { mSwapchain.get() };
+        mPresentQueue.presentKHR({1U, signalSemaphores, 1U, swapchains, &imageIndex, nullptr});
+
+        currentFrame = (currentFrame + 1) % kMaxInFlight;
     }
 };
 
