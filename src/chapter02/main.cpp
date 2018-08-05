@@ -1,8 +1,10 @@
 #define GLFW_INCLUDE_VULKAN
 #define VULKAN_HPP_TYPESAFE_CONVERSION
 #include <GLFW/glfw3.h>
+#include <glm/glm.hpp>
 #include <vulkan/vulkan.hpp>
 
+#include <array>
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
@@ -87,6 +89,25 @@ struct SwapchainSupportDetails
     std::vector<vk::PresentModeKHR> presentModes;
 };
 
+struct Vertex
+{
+    glm::vec2 pos;
+    glm::vec3 color;
+
+    static vk::VertexInputBindingDescription getBindingDescription()
+    {
+        return {0, sizeof(Vertex)};
+    }
+
+    static std::array<vk::VertexInputAttributeDescription, 2> getAttributeDescription()
+    {
+        return {
+            vk::VertexInputAttributeDescription{0, 0, vk::Format::eR32G32Sfloat, offsetof(Vertex, pos)},
+            vk::VertexInputAttributeDescription{1, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, color)}
+        };
+    }
+};
+
 class HelloTriangleApplication
 {
     constexpr static uint32_t kMaxInFlight = 2;
@@ -108,6 +129,12 @@ class HelloTriangleApplication
         VK_KHR_SWAPCHAIN_EXTENSION_NAME
     };
 
+    const std::vector<Vertex> vertices = {
+        {{ 0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+        {{ 0.5f,  0.5f}, {0.0f, 1.0f, 0.0f}},
+        {{-0.5f,  0.5f}, {0.0f, 0.0f, 1.0f}}
+    };
+
     GLFWwindow*                      mWindow;
 
     // application objects
@@ -119,6 +146,8 @@ class HelloTriangleApplication
     vk::Queue                        mGraphicsQueue;
     vk::Queue                        mPresentQueue;
     vk::UniqueCommandPool            mCommandPool;
+    vk::UniqueBuffer                 mVertexBuffer;
+    vk::UniqueDeviceMemory           mVertexBufferMemory;
     vk::UniqueShaderModule           mVertexShaderModule;
     vk::UniqueShaderModule           mFragmentShaderModule;
     std::vector<vk::UniqueSemaphore> mImageAvailableSemaphores;
@@ -169,13 +198,16 @@ private:
 
     void initVulkan()
     {
+        // application objects
         createInstance();
         createSurface();
         createDevice();
         createCommandPool();
+        createVertexBuffers();
         createShaderModules();
         createSynchronizationObjects();
 
+        // swapchain dependent objects
         createSwapchain();
         createRenderPass();
         createGraphicsPipeline();
@@ -392,6 +424,37 @@ private:
         mCommandPool = mDevice->createCommandPoolUnique({{}, indices.graphicsFamily});
     }
 
+    uint32_t findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties)
+    {
+        auto memoryProperties = mPhysicalDevice.getMemoryProperties();
+
+        for (uint32_t i{0}; i < memoryProperties.memoryTypeCount; i++)
+        {
+            if ((typeFilter & (1 << i)) && ((memoryProperties.memoryTypes[i].propertyFlags & properties) == properties))
+                return i;
+        }
+    }
+
+    void createVertexBuffers()
+    {
+        mVertexBuffer = mDevice->createBufferUnique({{}, sizeof vertices[0] * vertices.size(),
+                vk::BufferUsageFlagBits::eVertexBuffer, vk::SharingMode::eExclusive});
+
+        auto memoryRequirements = mDevice->getBufferMemoryRequirements(mVertexBuffer.get());
+        mVertexBufferMemory = mDevice->allocateMemoryUnique({memoryRequirements.size,
+                findMemoryType(memoryRequirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible
+                | vk::MemoryPropertyFlagBits::eHostCoherent)});
+        mDevice->bindBufferMemory(mVertexBuffer.get(), mVertexBufferMemory.get(), 0);
+
+        Vertex* vertexBufferData = static_cast<Vertex*>(mDevice->mapMemory(mVertexBufferMemory.get(), 0,
+                sizeof vertices[0] * vertices.size(), {}));
+        if (!vertexBufferData)
+            throw std::runtime_error("failed to map buffer memory!");
+
+        std::copy(vertices.begin(), vertices.end(), vertexBufferData);        
+        mDevice->unmapMemory(mVertexBufferMemory.get());     
+    }
+
     vk::UniqueShaderModule createShaderModule(const std::string& path)
     {
         auto object = readFile(path);
@@ -545,7 +608,12 @@ private:
             {{}, vk::ShaderStageFlagBits::eFragment, mFragmentShaderModule.get(), "main"}
         };
 
-        vk::PipelineVertexInputStateCreateInfo vertexInputInfo = {{}, 0U, nullptr, 0U, nullptr};
+        auto bindingDescription = Vertex::getBindingDescription();
+        auto attributeDescription = Vertex::getAttributeDescription();
+
+        vk::PipelineVertexInputStateCreateInfo vertexInputInfo = {{}, 1U, &bindingDescription,
+                (uint32_t) attributeDescription.size(), attributeDescription.data()};
+
         vk::PipelineInputAssemblyStateCreateInfo inputAssembly = {{}, vk::PrimitiveTopology::eTriangleList, false};
         vk::Viewport viewport = {0.0f, 0.0f, (float) mSwapchainExtent.width, (float) mSwapchainExtent.height, 0.0f, 1.0f};
         vk::Rect2D scissor = {{0, 0}, mSwapchainExtent};
@@ -609,8 +677,12 @@ private:
             vk::ClearValue clearColor = (vk::ClearColorValue) {std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}};
             commandBuffer->beginRenderPass({mRenderPass.get(), (framebufferIt++)->get(), {{0, 0}, mSwapchainExtent}, 1U,
                     &clearColor}, vk::SubpassContents::eInline);
-
             commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, mPipeline.get());
+
+            vk::Buffer vertexBuffers[] = {mVertexBuffer.get()};
+            vk::DeviceSize offsets[] = {0};
+            commandBuffer->bindVertexBuffers(0U, 1U, vertexBuffers, offsets);
+
             commandBuffer->draw(3U, 1U, 0U, 0U);
             commandBuffer->endRenderPass();
             commandBuffer->end();
