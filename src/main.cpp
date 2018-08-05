@@ -106,32 +106,34 @@ class HelloTriangleApplication
         VK_KHR_SWAPCHAIN_EXTENSION_NAME
     };
 
-    GLFWwindow* mWindow;
-    vk::UniqueInstance mInstance;
-    vk::UniqueDebugReportCallbackEXT mDebugReportCallback;
-    vk::PhysicalDevice mPhysicalDevice;
-    vk::UniqueDevice mDevice;
-    vk::Queue mGraphicsQueue;
-    vk::Queue mPresentQueue;
+    GLFWwindow*                      mWindow;
 
-    vk::UniqueRenderPass mRenderPass;
-    vk::UniqueShaderModule mVertexShaderModule;
-    vk::UniqueShaderModule mFragmentShaderModule;
-    vk::UniquePipelineLayout mPipelineLayout;
-    vk::UniquePipeline mPipeline;
+    // application objects
+    vk::UniqueInstance               mInstance;
+    vk::UniqueDebugReportCallbackEXT mDebugReportCallback;
+    vk::UniqueSurfaceKHR             mSurface;
+    vk::PhysicalDevice               mPhysicalDevice;
+    vk::UniqueDevice                 mDevice;
+    vk::Queue                        mGraphicsQueue;
+    vk::Queue                        mPresentQueue;
+    vk::UniqueCommandPool            mCommandPool;
+    vk::UniqueShaderModule           mVertexShaderModule;
+    vk::UniqueShaderModule           mFragmentShaderModule;
     std::vector<vk::UniqueSemaphore> mImageAvailableSemaphores;
     std::vector<vk::UniqueSemaphore> mRenderFinishedSemaphores;
-    std::vector<vk::UniqueFence> mInFlightFences;
+    std::vector<vk::UniqueFence>     mInFlightFences;
 
-    vk::UniqueSurfaceKHR mSurface;
-    vk::UniqueSwapchainKHR mSwapchain;
-    vk::Format mSwapchainImageFormat;
-    vk::Extent2D mSwapchainExtent;
-    std::vector<vk::Image> mSwapchainImages;
-    std::vector<vk::UniqueImageView> mSwapchainImageViews;
-    std::vector<vk::UniqueFramebuffer> mSwapchainFramebuffers;
-    vk::UniqueCommandPool mCommandPool;
-    std::vector<vk::CommandBuffer> mCommandBuffers;
+    // swapchain dependent objects
+    vk::UniqueSwapchainKHR               mSwapchain;
+    vk::Format                           mSwapchainImageFormat;
+    vk::Extent2D                         mSwapchainExtent;
+    std::vector<vk::Image>               mSwapchainImages;
+    std::vector<vk::UniqueImageView>     mSwapchainImageViews;
+    vk::UniqueRenderPass                 mRenderPass;
+    vk::UniquePipelineLayout             mPipelineLayout;
+    vk::UniquePipeline                   mPipeline;
+    std::vector<vk::UniqueFramebuffer>   mSwapchainFramebuffers;
+    std::vector<vk::UniqueCommandBuffer> mCommandBuffers;
 
     size_t currentFrame = 0;
 
@@ -159,13 +161,16 @@ private:
         createInstance();
         createSurface();
         createDevice();
+        createCommandPool();
+        createShaderModules();
+        createSynchronizationObjects();
+        createCommandPool();
+
         createSwapchain();
         createRenderPass();
         createGraphicsPipeline();
         createFramebuffers();
-        createCommandPool();
         createCommandBuffers();
-        createSemaphores();
     }
 
     void mainLoop()
@@ -341,6 +346,38 @@ private:
         throw std::runtime_error("failed to create logical device!");
     }
 
+    void createCommandPool()
+    {
+        auto indices = getQueueFamilyIndices(mPhysicalDevice);
+        mCommandPool = mDevice->createCommandPoolUnique({{}, indices.graphicsFamily});
+    }
+
+    vk::UniqueShaderModule createShaderModule(const std::string& path)
+    {
+        auto object = readFile(path);
+        return mDevice->createShaderModuleUnique({{}, object.size(), reinterpret_cast<const uint32_t*>(object.data())});
+    }
+
+    void createShaderModules()
+    {
+        if (!((mVertexShaderModule = createShaderModule("shaders/triangle/vert.spv")))
+                || !((mFragmentShaderModule = createShaderModule("shaders/triangle/frag.spv"))))
+        {
+            throw std::runtime_error("failed to shader create modules!");
+        }
+    }
+
+    void createSynchronizationObjects()
+    {
+        for (size_t i = 0; i < kMaxInFlight; i++)
+        {
+            if (!mImageAvailableSemaphores.emplace_back(mDevice->createSemaphoreUnique({}))
+                    || !mRenderFinishedSemaphores.emplace_back(mDevice->createSemaphoreUnique({}))
+                    || !mInFlightFences.emplace_back(mDevice->createFenceUnique({vk::FenceCreateFlagBits::eSignaled})))
+                throw std::runtime_error("failed to create synchronization object for a frame!");
+        }
+    }
+
     SwapchainSupportDetails getSwapchainSupportDetails(vk::PhysicalDevice& d)
     {
         return (SwapchainSupportDetails) {
@@ -459,20 +496,8 @@ private:
             throw std::runtime_error("failed to create render pass!");
     }
 
-    vk::UniqueShaderModule createShaderModule(const std::string& path)
-    {
-        auto object = readFile(path);
-        return mDevice->createShaderModuleUnique({{}, object.size(), reinterpret_cast<const uint32_t*>(object.data())});
-    }
-
     void createGraphicsPipeline()
     {
-        if (!((mVertexShaderModule = createShaderModule("shaders/triangle/vert.spv")))
-                || !((mFragmentShaderModule = createShaderModule("shaders/triangle/frag.spv"))))
-        {
-            throw std::runtime_error("failed to shader create modules!");
-        }
-
         vk::PipelineShaderStageCreateInfo shaderStages[] = {
             {{}, vk::ShaderStageFlagBits::eVertex, mVertexShaderModule.get(), "main"},
             {{}, vk::ShaderStageFlagBits::eFragment, mFragmentShaderModule.get(), "main"}
@@ -529,41 +554,24 @@ private:
         });
     }
 
-    void createCommandPool()
-    {
-        auto indices = getQueueFamilyIndices(mPhysicalDevice);
-        mCommandPool = mDevice->createCommandPoolUnique({{}, indices.graphicsFamily});
-    }
-
     void createCommandBuffers()
     {
-        mCommandBuffers = mDevice->allocateCommandBuffers({mCommandPool.get(), vk::CommandBufferLevel::ePrimary,
+        mCommandBuffers = mDevice->allocateCommandBuffersUnique({mCommandPool.get(), vk::CommandBufferLevel::ePrimary,
                 (uint32_t) mSwapchainFramebuffers.size()});
 
         auto framebufferIt = mSwapchainFramebuffers.begin();
         for (auto& commandBuffer : mCommandBuffers)
         {
-            commandBuffer.begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse, nullptr});
+            commandBuffer->begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse, nullptr});
 
             vk::ClearValue clearColor = (vk::ClearColorValue) {std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}};
-            commandBuffer.beginRenderPass({mRenderPass.get(), (framebufferIt++)->get(), {{0, 0}, mSwapchainExtent}, 1U,
+            commandBuffer->beginRenderPass({mRenderPass.get(), (framebufferIt++)->get(), {{0, 0}, mSwapchainExtent}, 1U,
                     &clearColor}, vk::SubpassContents::eInline);
 
-            commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, mPipeline.get());
-            commandBuffer.draw(3U, 1U, 0U, 0U);
-            commandBuffer.endRenderPass();
-            commandBuffer.end();
-        }
-    }
-
-    void createSemaphores()
-    {
-        for (size_t i = 0; i < kMaxInFlight; i++)
-        {
-            if (!mImageAvailableSemaphores.emplace_back(mDevice->createSemaphoreUnique({}))
-                    || !mRenderFinishedSemaphores.emplace_back(mDevice->createSemaphoreUnique({}))
-                    || !mInFlightFences.emplace_back(mDevice->createFenceUnique({vk::FenceCreateFlagBits::eSignaled})))
-                throw std::runtime_error("failed to create synchronization object for a frame!");
+            commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, mPipeline.get());
+            commandBuffer->draw(3U, 1U, 0U, 0U);
+            commandBuffer->endRenderPass();
+            commandBuffer->end();
         }
     }
 
@@ -582,7 +590,7 @@ private:
         vk::Semaphore waitSemaphores[] = {mImageAvailableSemaphores[currentFrame].get()};
         vk::Semaphore signalSemaphores[] = {mRenderFinishedSemaphores[currentFrame].get()};
         vk::PipelineStageFlags waitStages[] = {vk::PipelineStageFlagBits::eColorAttachmentOutput};
-        vk::SubmitInfo submitInfo = {1U, waitSemaphores, waitStages, 1U, &mCommandBuffers[imageIndex], 1U,
+        vk::SubmitInfo submitInfo = {1U, waitSemaphores, waitStages, 1U, &mCommandBuffers[imageIndex].get(), 1U,
                 signalSemaphores};
         if (mGraphicsQueue.submit(1U, &submitInfo, mInFlightFences[currentFrame].get()) != vk::Result::eSuccess)
             throw std::runtime_error("failed to submit draw command buffer!");
