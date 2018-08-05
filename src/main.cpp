@@ -175,7 +175,6 @@ private:
         createCommandPool();
         createShaderModules();
         createSynchronizationObjects();
-        createCommandPool();
 
         createSwapchain();
         createRenderPass();
