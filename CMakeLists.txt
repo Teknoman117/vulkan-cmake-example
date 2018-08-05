@@ -18,3 +18,10 @@ add_executable(chapter01
 )
 target_compile_features(chapter01 PUBLIC cxx_std_17)
 target_link_libraries(chapter01 Vulkan::Vulkan glfw glm)
+
+# chapter01 executable
+add_executable(chapter02
+    "${PROJECT_SOURCE_DIR}/src/chapter02/main.cpp"
+)
+target_compile_features(chapter02 PUBLIC cxx_std_17)
+target_link_libraries(chapter02 Vulkan::Vulkan glfw glm)
