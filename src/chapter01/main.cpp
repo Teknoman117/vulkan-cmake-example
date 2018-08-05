@@ -400,8 +400,8 @@ private:
 
     void createShaderModules()
     {
-        if (!((mVertexShaderModule = createShaderModule("shaders/triangle/vert.spv")))
-                || !((mFragmentShaderModule = createShaderModule("shaders/triangle/frag.spv"))))
+        if (!((mVertexShaderModule = createShaderModule("shaders/chapter01/triangle.vert.spv")))
+                || !((mFragmentShaderModule = createShaderModule("shaders/chapter01/triangle.frag.spv"))))
         {
             throw std::runtime_error("failed to shader create modules!");
         }
