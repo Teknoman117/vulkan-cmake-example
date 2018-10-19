@@ -854,11 +854,20 @@ private:
         auto framebufferIt = mSwapchainFramebuffers.begin();
         for (auto& commandBuffer : mCommandBuffers)
         {
-            commandBuffer->begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse, nullptr});
+            commandBuffer->begin(
+                    vk::CommandBufferBeginInfo()
+                        .setFlags(vk::CommandBufferUsageFlagBits::eSimultaneousUse));
 
-            vk::ClearValue clearColor = (vk::ClearColorValue) {std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}};
-            commandBuffer->beginRenderPass({mRenderPass.get(), (framebufferIt++)->get(), {{0, 0}, mSwapchainExtent}, 1U,
-                    &clearColor}, vk::SubpassContents::eInline);
+            vk::ClearValue clearColor = vk::ClearColorValue {std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}};
+            commandBuffer->beginRenderPass(
+                    vk::RenderPassBeginInfo()
+                        .setRenderPass(mRenderPass.get())
+                        .setFramebuffer((framebufferIt++)->get())
+                        .setRenderArea({{0, 0}, mSwapchainExtent})
+                        .setPClearValues(&clearColor)
+                        .setClearValueCount(1U),
+                    vk::SubpassContents::eInline);
+
             commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, mPipeline.get());
 
             vk::Buffer vertexBuffers[] = {mVertexBuffer.get()};
